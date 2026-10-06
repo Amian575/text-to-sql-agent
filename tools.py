@@ -13,23 +13,36 @@ BLOCKED_WORDS = [
     "replace", "attach", "detach", "pragma", "vacuum", "reindex",
 ]
 
+# Text inside quotes ("Update Date", 'a;b', `x`, [y]) is a name or a value, not a command
+QUOTED_PARTS = re.compile(r'''"[^"]*"|'[^']*'|`[^`]*`|\[[^\]]*\]''')
+
 
 def connect_readonly():
     """Open the database so that writing is impossible."""
     return sqlite3.connect(f"{DB_FILE.as_uri()}?mode=ro", uri=True)
 
 
+def quote_ident(name: str) -> str:
+    """Wrap a table or column name in double quotes so spaces are safe."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def needs_quotes(name: str) -> bool:
+    return not name.replace("_", "").isalnum()
+
+
 def check_sql_is_safe(sql: str):
     """Return None if the query is safe, otherwise a message saying why not."""
     cleaned = sql.strip().rstrip(";").strip()
+    scan = QUOTED_PARTS.sub('""', cleaned)
 
-    if ";" in cleaned:
+    if ";" in scan:
         return "Only one SQL statement is allowed."
 
-    if not re.match(r"^(select|with)\b", cleaned, re.IGNORECASE):
+    if not re.match(r"^(select|with)\b", scan, re.IGNORECASE):
         return "Only SELECT queries are allowed."
 
-    lowered = cleaned.lower()
+    lowered = scan.lower()
     for word in BLOCKED_WORDS:
         if re.search(rf"\b{word}\b", lowered):
             return f"The keyword '{word}' is not allowed."
@@ -57,9 +70,11 @@ def get_schema(table_name: str) -> str:
     if table_name not in names:
         conn.close()
         return f"Error: unknown table '{table_name}'. Valid tables: {', '.join(names)}"
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    rows = conn.execute(f"PRAGMA table_info({quote_ident(table_name)})").fetchall()
     conn.close()
-    return ", ".join(f"{r[1]} {r[2]}" for r in rows)
+    return ", ".join(
+        f"{quote_ident(r[1]) if needs_quotes(r[1]) else r[1]} {r[2]}" for r in rows
+    )
 
 
 @tool

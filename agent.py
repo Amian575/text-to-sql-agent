@@ -3,7 +3,9 @@ from typing import TypedDict
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from tools import list_tables, get_schema, run_query, connect_readonly
+from tools import (
+    list_tables, get_schema, run_query, connect_readonly, quote_ident, needs_quotes,
+)
 
 load_dotenv()
 llm = ChatGoogleGenerativeAI(
@@ -61,7 +63,7 @@ def sample_values(conn, table: str) -> list:
     """For text columns with few distinct values, list those values.
     (Table names here come from the database itself, not from the user.)"""
     lines = []
-    for col in conn.execute(f"PRAGMA table_info({table})").fetchall():
+    for col in conn.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall():
         name, col_type = col[1], (col[2] or "").upper()
         if "CHAR" not in col_type and "TEXT" not in col_type:
             continue
@@ -73,7 +75,8 @@ def sample_values(conn, table: str) -> list:
             )
         ]
         if 0 < len(values) <= MAX_DISTINCT_VALUES:
-            lines.append(f"  {name} values: {', '.join(str(v) for v in values)}")
+            label = quote_ident(name) if needs_quotes(name) else name
+            lines.append(f"  {label} values: {', '.join(str(v) for v in values)}")
     return lines
 
 
@@ -83,7 +86,8 @@ def load_schema(state: AgentState) -> dict:
     conn = connect_readonly()
     parts = []
     for t in tables:
-        parts.append(f"{t}: {get_schema.invoke({'table_name': t})}")
+        label = quote_ident(t) if needs_quotes(t) else t
+        parts.append(f"{label}: {get_schema.invoke({'table_name': t})}")
         parts.extend(sample_values(conn, t))
     conn.close()
     return {"schema": "\n".join(parts)}
@@ -110,6 +114,7 @@ Rules:
 - When comparing text values (names, cities, categories), ignore letter case, for example LOWER(column) = LOWER('value').
 - If the schema lists example values for a column, use the closest matching value exactly as written there (the question may use a plural form or a different spelling).
 - Do not mix an aggregate such as COUNT(*) with plain columns in the same SELECT unless you use GROUP BY or a window function. If the question asks for both a count and a list, return the list and add COUNT(*) OVER () AS total_count to every row.
+- Wrap table or column names that contain spaces or special characters in double quotes, exactly as they appear in the schema.
 - If the schema does not contain the data needed to answer, reply with exactly: NO_DATA
 - Otherwise reply with one SQLite query only, no explanation."""
 
